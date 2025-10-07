@@ -20,6 +20,89 @@ const VoiceDetection = () => {
   const animationFrameRef = useRef<number>();
   const { toast } = useToast();
 
+  // Helpers: convert recorded WebM/Opus to WAV (mono, 16kHz) and base64-encode
+  const floatTo16BitPCM = (input: Float32Array) => {
+    const output = new DataView(new ArrayBuffer(input.length * 2));
+    let offset = 0;
+    for (let i = 0; i < input.length; i++) {
+      let s = Math.max(-1, Math.min(1, input[i]));
+      output.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      offset += 2;
+    }
+    return output.buffer;
+  };
+
+  const encodeWav = (samples: Float32Array, sampleRate: number) => {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+
+    const writeString = (offset: number, str: string) => {
+      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+    };
+
+    const dataBuffer = floatTo16BitPCM(samples);
+
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + dataBuffer.byteLength, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true); // PCM subchunk size
+    view.setUint16(20, 1, true); // audio format = PCM
+    view.setUint16(22, 1, true); // channels = 1 (mono)
+    view.setUint32(24, sampleRate, true); // sample rate
+    view.setUint32(28, sampleRate * 2, true); // byte rate (sampleRate * blockAlign)
+    view.setUint16(32, 2, true); // block align (numChannels * bytesPerSample)
+    view.setUint16(34, 16, true); // bits per sample
+    writeString(36, 'data');
+    view.setUint32(40, dataBuffer.byteLength, true);
+
+    new Uint8Array(buffer, 44).set(new Uint8Array(dataBuffer));
+    return buffer;
+  };
+
+  const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const chunk = bytes.subarray(i, i + chunkSize);
+      binary += String.fromCharCode.apply(null, Array.from(chunk));
+    }
+    return btoa(binary);
+  };
+
+  const webmBlobToWavBase64 = async (blob: Blob) => {
+    const arrayBuffer = await blob.arrayBuffer();
+    const ctx: AudioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const decoded = await ctx.decodeAudioData(arrayBuffer.slice(0));
+
+    // convert to mono
+    const numSamples = decoded.length;
+    const mono = decoded.numberOfChannels > 1 ? (() => {
+      const tmp = new Float32Array(numSamples);
+      const ch0 = decoded.getChannelData(0);
+      const ch1 = decoded.getChannelData(1);
+      for (let i = 0; i < numSamples; i++) tmp[i] = (ch0[i] + ch1[i]) / 2;
+      return tmp;
+    })() : decoded.getChannelData(0);
+
+    // resample to 16kHz using OfflineAudioContext
+    const targetRate = 16000;
+    const length = Math.ceil(decoded.duration * targetRate);
+    const offline = new OfflineAudioContext(1, length, targetRate);
+    const buffer = offline.createBuffer(1, decoded.length, decoded.sampleRate);
+    buffer.copyToChannel(mono, 0);
+    const source = offline.createBufferSource();
+    source.buffer = buffer;
+    source.connect(offline.destination);
+    source.start(0);
+    const rendered = await offline.startRendering();
+    const resampled = rendered.getChannelData(0);
+
+    const wav = encodeWav(resampled, targetRate);
+    return arrayBufferToBase64(wav);
+  };
+
   const startListening = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -122,9 +205,8 @@ const VoiceDetection = () => {
 
   const analyzeAudio = async (audioBlob: Blob) => {
     try {
-      // Convert blob to base64 for API call
-      const arrayBuffer = await audioBlob.arrayBuffer();
-      const base64Audio = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+      // Convert recorded WebM/Opus to WAV 16k mono and base64
+      const base64Audio = await webmBlobToWavBase64(audioBlob);
 
       // Call the Python YAMNet API
       const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -135,12 +217,13 @@ const VoiceDetection = () => {
         },
         body: JSON.stringify({
           audio_data: base64Audio,
-          audio_format: 'webm'
+          audio_format: 'wav'
         })
       });
 
       if (!response.ok) {
-        throw new Error(`API call failed: ${response.status}`);
+        const text = await response.text().catch(() => '');
+        throw new Error(`API call failed: ${response.status} ${text}`);
       }
 
       const analysisResult = await response.json();
@@ -169,20 +252,11 @@ const VoiceDetection = () => {
 
     } catch (error) {
       console.error('Error analyzing audio:', error);
-      
-      // Fallback to mock analysis if API is not available
-      const mockAnalysis = [
-        "⚠️ API not available - using mock analysis",
-        `Duration: ${(audioBlob.size / 1000).toFixed(1)}s`,
-        "Voice pattern: Normal conversation (simulated)",
-        "Distress level: Low (simulated)"
-      ];
-
-      setAnalysisResults(prev => [...prev, ...mockAnalysis]);
-      
+      const errMsg = error instanceof Error ? error.message : String(error);
+      setAnalysisResults(prev => [...prev, `Analysis error: ${errMsg}`]);
       toast({
-        title: "API Unavailable",
-        description: "Using mock analysis. Start the Python backend for real AI analysis.",
+        title: "Analysis Failed",
+        description: errMsg,
         variant: "destructive"
       });
     }
