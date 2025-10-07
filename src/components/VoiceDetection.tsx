@@ -13,6 +13,7 @@ const VoiceDetection = () => {
   const [distressDetected, setDistressDetected] = useState(false);
   const [analysisResults, setAnalysisResults] = useState<string[]>([]);
   const [userEmail, setUserEmail] = useState('user@example.com');
+  const [apiConnected, setApiConnected] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -108,11 +109,11 @@ const VoiceDetection = () => {
     const level = (average / 255) * 100;
     setAudioLevel(level);
 
-    // Hardcoded scream detection between 70-90% for prototype
-    if (level > 30 && Math.random() > 0.85) { // Simulate occasional detection
+    // Only use mock detection if API is not connected
+    if (!apiConnected && level > 30 && Math.random() > 0.95) { // Simulate occasional detection
       const screamDetectionValue = 70 + Math.random() * 20; // Random between 70-90%
       setDistressDetected(true);
-      setAnalysisResults(prev => [...prev, `🚨 Scream detected: ${screamDetectionValue.toFixed(1)}% confidence`]);
+      setAnalysisResults(prev => [...prev, `🚨 Mock scream detected: ${screamDetectionValue.toFixed(1)}% confidence`]);
       triggerEmergencyAlert(screamDetectionValue);
     }
 
@@ -125,22 +126,63 @@ const VoiceDetection = () => {
       const arrayBuffer = await audioBlob.arrayBuffer();
       const base64Audio = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
 
-      // In a real implementation, you would call an AI service here
-      // For demo purposes, we'll simulate analysis
-      const mockAnalysis = [
-        "Audio analysis complete",
-        `Duration: ${(audioBlob.size / 1000).toFixed(1)}s`,
-        "Voice pattern: Normal conversation",
-        "Distress level: Low"
+      // Call the Python YAMNet API
+      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+      const response = await fetch(`${apiBase}/analyze-audio`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          audio_data: base64Audio,
+          audio_format: 'webm'
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`API call failed: ${response.status}`);
+      }
+
+      const analysisResult = await response.json();
+      
+      // Process the analysis results
+      const analysisDetails = [
+        `Audio analysis complete (${(audioBlob.size / 1000).toFixed(1)}s)`,
+        `Emergency level: ${analysisResult.emergency_level.toUpperCase()}`,
+        `Confidence: ${(analysisResult.confidence * 100).toFixed(1)}%`
       ];
 
-      setAnalysisResults(prev => [...prev, ...mockAnalysis]);
+      if (analysisResult.danger_detected) {
+        analysisDetails.push("🚨 DANGER DETECTED!");
+        analysisResult.detected_classes.forEach((detected: any) => {
+          analysisDetails.push(`- ${detected.class}: ${(detected.confidence * 100).toFixed(1)}%`);
+        });
+        
+        // Trigger emergency alert if danger is detected
+        setDistressDetected(true);
+        triggerEmergencyAlert(analysisResult.confidence * 100);
+      } else {
+        analysisDetails.push("No danger signals detected");
+      }
+
+      setAnalysisResults(prev => [...prev, ...analysisDetails]);
 
     } catch (error) {
       console.error('Error analyzing audio:', error);
+      
+      // Fallback to mock analysis if API is not available
+      const mockAnalysis = [
+        "⚠️ API not available - using mock analysis",
+        `Duration: ${(audioBlob.size / 1000).toFixed(1)}s`,
+        "Voice pattern: Normal conversation (simulated)",
+        "Distress level: Low (simulated)"
+      ];
+
+      setAnalysisResults(prev => [...prev, ...mockAnalysis]);
+      
       toast({
-        title: "Analysis Failed",
-        description: "Could not analyze the audio recording.",
+        title: "API Unavailable",
+        description: "Using mock analysis. Start the Python backend for real AI analysis.",
         variant: "destructive"
       });
     }
@@ -191,13 +233,33 @@ const VoiceDetection = () => {
     triggerEmergencyAlert(85); // Manual trigger with high confidence
   };
 
+  // Check API connection on component mount
   useEffect(() => {
+    const checkApiConnection = async () => {
+      try {
+        const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+        const response = await fetch(`${apiBase}/health`);
+        if (response.ok) {
+          setApiConnected(true);
+          toast({
+            title: "AI Backend Connected",
+            description: "YAMNet model is ready for real-time analysis.",
+          });
+        }
+      } catch (error) {
+        setApiConnected(false);
+        console.log("API not available, using mock detection");
+      }
+    };
+
+    checkApiConnection();
+    
     return () => {
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, []);
+  }, [toast]);
 
   return (
     <div className="space-y-6">
@@ -210,6 +272,12 @@ const VoiceDetection = () => {
           <CardDescription>
             AI-powered detection of distress signals and emergency situations
           </CardDescription>
+          <div className="flex items-center justify-center gap-2 mt-2">
+            <div className={`w-2 h-2 rounded-full ${apiConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+            <span className="text-sm text-muted-foreground">
+              {apiConnected ? 'YAMNet AI Connected' : 'Mock Mode (Start Python backend)'}
+            </span>
+          </div>
         </CardHeader>
         <CardContent className="space-y-6">
           {/* Demo Email Input */}
@@ -302,14 +370,23 @@ const VoiceDetection = () => {
           {/* Instructions */}
           <Card className="bg-muted/50">
             <CardContent className="pt-6">
-              <h4 className="font-semibold mb-2">Prototype Features:</h4>
+              <h4 className="font-semibold mb-2">How to Use:</h4>
               <ul className="text-sm space-y-1 text-muted-foreground">
+                <li>• <strong>Start Python Backend:</strong> Run <code>python start_voice_api.py</code></li>
                 <li>• Click the microphone to start listening</li>
-                <li>• Scream detection simulated between 70-90% confidence</li>
+                <li>• YAMNet AI analyzes audio for danger signals (screaming, shouting, etc.)</li>
                 <li>• Automatic community alerts when distress detected</li>
                 <li>• Email notifications sent to registered email</li>
-                <li>• Location shared with nearby community members</li>
+                <li>• Real-time AI analysis with confidence scores</li>
               </ul>
+              {!apiConnected && (
+                <div className="mt-4 p-3 bg-yellow-100 border border-yellow-300 rounded">
+                  <p className="text-sm text-yellow-800">
+                    <strong>Note:</strong> Start the Python backend for real AI analysis. 
+                    Currently running in mock mode.
+                  </p>
+                </div>
+              )}
             </CardContent>
           </Card>
         </CardContent>

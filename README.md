@@ -60,6 +60,35 @@ This project is built with:
 - shadcn-ui
 - Tailwind CSS
 
+## Voice Recognition (YAMNet) Backend
+
+This project includes a Python FastAPI backend that uses Google's YAMNet model to analyze audio for safety-related events (screaming, shouting, alarms, etc.).
+
+### Quick start (local)
+
+```bash
+python start_voice_api.py
+# API docs: http://localhost:8000/docs
+```
+
+Frontend will connect to the backend using `VITE_API_URL` (defaults to `http://localhost:8000`).
+
+Create `.env` in project root:
+
+```env
+VITE_API_URL=http://localhost:8000
+```
+
+### Backend environment
+
+```env
+ALLOWED_ORIGINS=https://your-frontend-domain.com,http://localhost:5173
+```
+
+### Deploying the backend
+
+Use the provided `Dockerfile` and `render.yaml` to deploy on Render or any container platform. Set `ALLOWED_ORIGINS` to your deployed frontend URL.
+
 ## How can I deploy this project?
 
 Simply open [Lovable](https://lovable.dev/projects/e5a86c3b-64da-4ce3-9dd6-1ea5927ea316) and click on Share -> Publish.

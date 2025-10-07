@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: sheguard-voice-api
+    env: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: ALLOWED_ORIGINS
+        value: https://your-frontend-domain.com,https://sheguard.netlify.app,http://localhost:5173
+    buildCommand: docker build -t sheguard-voice-api .
+    startCommand: docker run -p 8000:8000 sheguard-voice-api
+
